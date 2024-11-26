@@ -7,7 +7,11 @@
 # socket, temporary files, and launches rbd-mirror daemon.
 #
 
-set -ex
+if [ -n "${RBD_MIRROR_SHOW_CMD}" ]; then
+  set -e
+else  
+  set -ex
+fi  
 
 MIRROR_POOL_MODE=image
 MIRROR_IMAGE_MODE=snapshot
@@ -46,6 +50,13 @@ testlog "TEST: add image to group and test replay"
 image=test-image
 create_image ${CLUSTER2} ${POOL} ${image}
 group_image_add ${CLUSTER2} ${POOL}/${group} ${POOL}/${image}
+
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+    # check secondary cluster sees 0 images
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}"/"${group}" 'up+replaying' 0
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}"/"${group}"
+fi
+
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${group} 1
 wait_for_image_present ${CLUSTER1} ${POOL} ${image} 'present'
 write_image ${CLUSTER2} ${POOL} ${image} 100
@@ -55,8 +66,20 @@ compare_images ${CLUSTER1} ${CLUSTER2} ${POOL} ${POOL} ${image}
 
 testlog "TEST: test replay with remove image and later add the same"
 group_image_remove ${CLUSTER2} ${POOL}/${group} ${POOL}/${image}
+
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}"/"${group}"
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}"/"${group}" 'up+replaying' 0
+fi
+
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${group} 0
 group_image_add ${CLUSTER2} ${POOL}/${group} ${POOL}/${image}
+
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}"/"${group}" 'up+replaying' 0
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}"/"${group}"
+fi
+
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${group} 1
 
 : ' # different pools - not MVP
@@ -64,6 +87,10 @@ testlog "TEST: add image from a different pool to group and test replay"
 image0=test-image-diff-pool
 create_image ${CLUSTER2} ${PARENT_POOL} ${image0}
 group_image_add ${CLUSTER2} ${POOL}/${group} ${PARENT_POOL}/${image0}
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}"/"${group}" 'up+replaying' 1
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}"/"${group}"
+fi
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${group} 2
 wait_for_image_present ${CLUSTER1} ${PARENT_POOL} ${image0} 'present'
 write_image ${CLUSTER2} ${PARENT_POOL} ${image0} 100
@@ -71,6 +98,10 @@ mirror_group_snapshot_and_wait_for_sync_complete ${CLUSTER1} ${CLUSTER2} ${POOL}
 wait_for_group_status_in_pool_dir ${CLUSTER1} ${POOL}/${group} 'up+replaying'
 compare_images ${PARENT_POOL} ${image0}
 group_image_remove ${CLUSTER1} ${POOL}/${group} ${PARENT_POOL}/${image0}
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}"/"${group}" 'up+replaying' 2
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}"/"${group}"
+fi
 '
 
 testlog "TEST: create regular group snapshots and test replay"
@@ -94,6 +125,9 @@ create_group_and_enable_mirror ${CLUSTER2} ${POOL}/${group1}
 image1=test-image1
 create_image ${CLUSTER2} ${POOL} ${image1}
 group_image_add ${CLUSTER2} ${POOL}/${group1} ${POOL}/${image1}
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+  mirror_group_snapshot "${CLUSTER2}" "${POOL}"/"${group}" "${group_snap_id}"
+fi
 start_mirrors ${CLUSTER1}
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${group1} 1
 mirror_group_snapshot_and_wait_for_sync_complete ${CLUSTER1} ${CLUSTER2} ${POOL}/${group1}
@@ -134,13 +168,26 @@ big_image=test-image-big
 create_image ${CLUSTER2} ${POOL} ${big_image} 1G
 group_image_add ${CLUSTER2} ${POOL}/${group} ${POOL}/${big_image}
 write_image ${CLUSTER2} ${POOL} ${big_image} 1024 4194304
+
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}"/"${group}" 'up+replaying' 1
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}"/"${group}"
+fi
+
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${group} 2
-mirror_group_snapshot_and_wait_for_sync_complete ${CLUSTER1} ${CLUSTER2} ${POOL}/${group}
-test_group_and_image_sync_status ${CLUSTER1} ${CLUSTER2} ${POOL}/${group} ${POOL}/${big_image}
+mirror_group_snapshot_and_wait_for_sync_complete ${CLUSTER1} ${CLUSTER2} ${POOL}/${group} 
+test_images_in_latest_synced_group ${CLUSTER1} ${POOL}/${group} 2
 group_image_remove ${CLUSTER2} ${POOL}/${group} ${POOL}/${big_image}
+
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}"/"${group}" 'up+replaying' 1
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}"/"${group}"
+fi
+
 remove_image_retry ${CLUSTER2} ${POOL} ${big_image}
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${group} 1
 mirror_group_snapshot_and_wait_for_sync_complete ${CLUSTER1} ${CLUSTER2} ${POOL}/${group}
+test_images_in_latest_synced_group ${CLUSTER1} ${POOL}/${group} 1
 
 testlog "TEST: test group rename"
 new_name="${group}_RENAMED"
@@ -151,6 +198,9 @@ group_rename ${CLUSTER2} ${POOL}/${new_name} ${POOL}/${group}
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${group} 1
 wait_for_group_status_in_pool_dir ${CLUSTER1} ${POOL}/${group} 'up+replaying' 1
 
+# TODO add new image to syncing snapshot
+#  rollback needs to remove new image before rolling back
+# also remove image and rollback
 testlog "TEST: failover and failback"
 start_mirrors ${CLUSTER2}
 
@@ -263,6 +313,14 @@ create_image ${CLUSTER2} ${POOL}/${NS1} ${image}
 create_image ${CLUSTER2} ${POOL}/${NS2} ${image}
 group_image_add ${CLUSTER2} ${POOL}/${NS1}/${group} ${POOL}/${NS1}/${image}
 group_image_add ${CLUSTER2} ${POOL}/${NS2}/${group} ${POOL}/${NS2}/${image}
+
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}/${NS1}/${group}" 'up+replaying' 0
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}/${NS2}/${group}" 'up+replaying' 0
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}/${NS1}/${group}"
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}/${NS2}/${group}"
+fi
+
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${NS1}/${group} 1
 wait_for_group_replay_started ${CLUSTER1} ${POOL}/${NS2}/${group} 1
 write_image ${CLUSTER2} ${POOL}/${NS1} ${image} 100
@@ -276,6 +334,12 @@ compare_images ${CLUSTER1} ${CLUSTER2} ${POOL}/${NS2} ${POOL}/${NS2} ${image}
 
 testlog " - disable mirroring / remove group"
 group_image_remove ${CLUSTER2} ${POOL}/${NS1}/${group} ${POOL}/${NS1}/${image}
+
+if [ -n "${RBD_MIRROR_NEW_IMPLICIT_BEHAVIOUR}" ]; then
+    wait_for_group_status_in_pool_dir "${CLUSTER1}" "${POOL}/${NS1}/${group}" 'up+replaying' 1
+    mirror_group_snapshot_and_wait_for_sync_complete "${CLUSTER1}" "${CLUSTER2}" "${POOL}/${NS1}/${group}"
+fi
+
 remove_image_retry ${CLUSTER2} ${POOL}/${NS1} ${image}
 wait_for_image_present ${CLUSTER1} ${POOL}/${NS1} ${image} 'deleted'
 group_remove ${CLUSTER1} ${POOL}/${NS1}/${group}
