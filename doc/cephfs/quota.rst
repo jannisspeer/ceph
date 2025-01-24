@@ -15,6 +15,8 @@ If the extended attributes appear on a directory that means a quota is
 configured there. If they are not present then no quota is set on that
 directory (although one may still be configured on a parent directory).
 
+.. note:: For clients to be able to set quotas, the clients require the ``p`` flag in addition to ``rw``. For details see :ref:`client-auth`.
+
 To set a quota, set the extended attribute on a CephFS directory with a
 value::
 
